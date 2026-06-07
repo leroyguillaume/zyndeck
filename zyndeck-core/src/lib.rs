@@ -5,12 +5,16 @@
 //! from their own representations.
 
 mod game;
+mod ingestion_job;
 mod language_code;
 mod localized_string;
 mod role;
 mod user;
 
 pub use game::Game;
+pub use ingestion_job::{
+    IngestionJob, IngestionStep, IngestionStepRun, ParseIngestionStepError, StepRunStatus,
+};
 pub use language_code::{InvalidLanguageCode, LanguageCode};
 pub use localized_string::LocalizedString;
 pub use role::{ParseRoleError, Role};

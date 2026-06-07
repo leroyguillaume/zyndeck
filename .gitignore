@@ -6,3 +6,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Vendored pdfium native library (fetched via scripts/fetch-pdfium.sh)
+/vendor/pdfium/

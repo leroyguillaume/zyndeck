@@ -12,6 +12,10 @@ workspace = true
 
 [dependencies]
 clap.workspace = true
+uuid.workspace = true
+zyndeck-core.workspace = true
+zyndeck-db.workspace = true
+pdfium-render.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

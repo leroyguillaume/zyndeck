@@ -25,7 +25,13 @@ thiserror = "2"
 mockall = "0.14"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+tokio = { version = "1", features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "net",
+    "time",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
@@ -51,6 +57,7 @@ argon2 = { version = "0.5", features = ["std"] }
 validator = { version = "0.20", features = ["derive"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+pdfium-render = "0.9"
 
 # Internal crates, depended on across the workspace via `foo.workspace = true`.
 zyndeck-core = { path = "zyndeck-core" }

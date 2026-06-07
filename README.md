@@ -89,11 +89,16 @@ Common options:
 
 ## Run
 
-Run a specific crate from the workspace root with `-p`:
+Run a specific crate from the workspace root with `-p`. The ingester is
+database-backed and applies migrations at startup, so it needs `DATABASE_URL`:
 
 ```bash
-cargo run -p zyndeck-ingester
+docker compose up -d postgres
+DATABASE_URL=postgresql://zyndeck:zyndeck@localhost:5432/zyndeck \
+  cargo run -p zyndeck-ingester -- run
 ```
+
+See the [`zyndeck-ingester` README](zyndeck-ingester) for its subcommands.
 
 The HTTP API needs a database and a JWT secret:
 

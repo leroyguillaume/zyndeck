@@ -2,3 +2,4 @@
 DATABASE_URL = "postgresql://zyndeck:zyndeck@localhost:5432/zyndeck"
 JWT_SECRET = "changeit"
 ADMIN_PASSWORD = "admin"
+PDFIUM_LIB_PATH = "vendor/pdfium/lib"
