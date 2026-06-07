@@ -1,0 +1,27 @@
+[package]
+name = "zyndeck-db"
+version = "0.1.0"
+description = "Zyndeck database access layer: connection pool and migrations."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Generates `mockall` doubles of the repository traits (MockGameRepository,
+# MockUserRepository) for use by downstream crates' tests.
+mock = ["dep:mockall"]
+
+[dependencies]
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+mockall = { workspace = true, optional = true }
+sqlx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zyndeck-core.workspace = true

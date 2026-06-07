@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["zyndeck-ingester"]
+members = ["zyndeck-api", "zyndeck-core", "zyndeck-db", "zyndeck-ingester"]
 
 [workspace.package]
 edition = "2024"
@@ -11,10 +11,50 @@ repository = "https://github.com/leroyguillaume/zyndeck"
 # Shared dependency versions, pulled into each crate with `foo.workspace = true`.
 [workspace.dependencies]
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+sqlx = { version = "0.9", features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+    "uuid",
+    "json",
+    "chrono",
+] }
+thiserror = "2"
+mockall = "0.14"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde", "v4"] }
+isolang = "2"
+# Pinned to the schemars version aide 0.15 re-exports, to avoid a clash when the
+# HTTP boundary crate generates OpenAPI from these schemas.
+schemars = { version = "0.9", features = ["chrono04", "uuid1"] }
+axum = "0.8"
+aide = { version = "0.15", features = [
+    "axum",
+    "axum-json",
+    "axum-query",
+    "scalar",
+    "macros",
+] }
+jsonwebtoken = { version = "10", default-features = false, features = [
+    "rust_crypto",
+] }
+argon2 = { version = "0.5", features = ["std"] }
+validator = { version = "0.20", features = ["derive"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+# Internal crates, depended on across the workspace via `foo.workspace = true`.
+zyndeck-core = { path = "zyndeck-core" }
+zyndeck-db = { path = "zyndeck-db" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

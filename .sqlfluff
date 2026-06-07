@@ -1,0 +1,9 @@
+[sqlfluff]
+dialect = postgres
+# Plain SQL files (queries + migrations), no templating engine.
+templater = raw
+max_line_length = 100
+# RF04/RF06: we deliberately use the reserved-ish words `user` and `role` as
+# identifiers (quoting `"user"` where Postgres requires it). These rules fight
+# that on purpose, so turn them off.
+exclude_rules = RF04, RF06

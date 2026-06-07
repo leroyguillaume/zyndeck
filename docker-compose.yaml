@@ -1,0 +1,73 @@
+# Local runtime for Zyndeck: Ollama (models) and Postgres (data).
+#
+# Ollama serves the embedding and generation models the ingester relies on, on
+# a CPU-only, low-RAM host (no GPU section on purpose); models are pulled by the
+# `post_start` lifecycle hook once the server is up. Postgres (with pgvector)
+# backs zyndeck-db, including rule embeddings. Both cache their state in named
+# volumes so it survives restarts.
+#
+# Requires Docker Compose v2.30+ (for the `post_start` hook).
+services:
+  ollama:
+    image: ollama/ollama:0.30.6
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      # Bind to all interfaces so the mapped port is reachable from the host.
+      OLLAMA_HOST: 0.0.0.0
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test:
+        - CMD
+        - ollama
+        - list
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Pull the models once the server accepts connections. `ollama pull` is
+    # idempotent, so re-running the hook on restart is a cheap no-op when the
+    # models are already cached in the volume.
+    #
+    # Models chosen (benchmark snapshot: June 2026 — revisit periodically):
+    #   - bge-m3:567m      embeddings, strong cross-lingual FR<->EN, 8K context
+    #   - gemma3:4b-it-qat generation, QAT for low RAM, solid French
+    post_start:
+      - command:
+          - /bin/sh
+          - -c
+          - |
+            until ollama list >/dev/null 2>&1; do
+              echo "waiting for ollama server..."
+              sleep 1
+            done
+            ollama pull bge-m3:567m
+            ollama pull gemma3:4b-it-qat
+
+  postgres:
+    # pgvector-enabled Postgres so zyndeck-db can store rule embeddings.
+    image: pgvector/pgvector:0.8.2-pg18-bookworm
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: zyndeck
+      POSTGRES_PASSWORD: zyndeck
+      POSTGRES_DB: zyndeck
+    volumes:
+      # Postgres 18+ stores data in a versioned subdirectory; mount the parent
+      # so the layout matches the image's expectations.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U zyndeck -d zyndeck
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ollama-models:
+  postgres-data:

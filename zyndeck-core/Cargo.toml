@@ -1,0 +1,22 @@
+[package]
+name = "zyndeck-core"
+version = "0.1.0"
+description = "Zyndeck domain model: games, rules, and shared value types."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+isolang.workspace = true
+schemars.workspace = true
+serde.workspace = true
+# Used at build time by the `#[schemars(extend(...))]` attribute, so it is a
+# regular dependency, not dev-only.
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
