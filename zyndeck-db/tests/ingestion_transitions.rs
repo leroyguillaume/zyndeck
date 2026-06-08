@@ -10,8 +10,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 use zyndeck_core::{
-    IngestionJob, IngestionStep, IngestionStepRun, LanguageCode, LocalizedString, Role,
-    StepRunStatus,
+    IngestionJob, IngestionMode, IngestionStep, IngestionStepRun, LanguageCode, LocalizedString,
+    Role, StepRunStatus,
 };
 use zyndeck_db::{
     Advanced, Db, Error, GameRepository, IngestionStepRunRepository, NewGame, NewIngestionJob,
@@ -44,6 +44,7 @@ async fn start(db: &Db) -> (IngestionJob, IngestionStepRun) {
         game_id: game,
         source: "rules.pdf".into(),
         language: LanguageCode::ENGLISH,
+        mode: IngestionMode::Manual,
         created_by: None,
     })
     .await
@@ -195,6 +196,7 @@ async fn start_for_an_unknown_game_reports_game_not_found(pool: PgPool) {
             game_id: unknown,
             source: "rules.pdf".into(),
             language: LanguageCode::ENGLISH,
+            mode: IngestionMode::Manual,
             created_by: None,
         })
         .await;

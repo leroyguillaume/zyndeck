@@ -11,7 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
-use zyndeck_core::{IngestionJob, IngestionStep, IngestionStepRun, LanguageCode};
+use zyndeck_core::{IngestionJob, IngestionMode, IngestionStep, IngestionStepRun, LanguageCode};
 use zyndeck_db::{
     Advanced, Db, DbConfig, IngestionJobRepository, IngestionStepRunRepository,
     IngestionTranscriptRepository, NewIngestionJob, StepOutcome,
@@ -84,6 +84,13 @@ enum IngestAction {
         #[arg(long = "language", env = "RULES_LANGUAGE")]
         language: LanguageCode,
 
+        /// How the job advances between steps: `manual` stops after each step
+        /// and waits for `continue` (so its output can be reviewed and
+        /// corrected); `auto` runs straight through until the job completes or a
+        /// step fails.
+        #[arg(long = "mode", env = "INGESTION_MODE", default_value_t = IngestionMode::Auto)]
+        mode: IngestionMode,
+
         /// Id of the user starting the job, if any (CLI runs may be anonymous).
         #[arg(long = "created-by", env = "CREATED_BY")]
         created_by: Option<Uuid>,
@@ -139,8 +146,9 @@ async fn main() -> anyhow::Result<()> {
                     game_id,
                     file,
                     language,
+                    mode,
                     created_by,
-                } => ingest_start(&ctx, game_id, file, language, created_by).await,
+                } => ingest_start(&ctx, game_id, file, language, mode, created_by).await,
                 IngestAction::Continue { job_id } => ingest_continue(&ctx, job_id).await,
                 IngestAction::Restart { job_id } => ingest_restart(&ctx, job_id).await,
                 IngestAction::Stop { job_id } => ingest_stop(&ctx, job_id).await,
@@ -162,12 +170,13 @@ async fn run() -> anyhow::Result<()> {
 /// How often a running step polls the database to see whether it was stopped.
 const ABORT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Creates a job (atomically beginning its first step's run) and runs that step.
+/// Creates a job (atomically beginning its first step's run) and drives it.
 async fn ingest_start(
     ctx: &Ctx,
     game_id: Uuid,
     file: PathBuf,
     language: LanguageCode,
+    mode: IngestionMode,
     created_by: Option<Uuid>,
 ) -> anyhow::Result<()> {
     let (job, run) = ctx
@@ -176,6 +185,7 @@ async fn ingest_start(
             game_id,
             source: file,
             language,
+            mode,
             created_by,
         })
         .await?;
@@ -183,6 +193,7 @@ async fn ingest_start(
     tracing::info!(
         job_id = %job.id,
         step = job.step.as_str(),
+        mode = job.mode.as_str(),
         game_id = %job.game_id,
         source = %job.source.display(),
         language = job.language.as_str(),
@@ -190,10 +201,10 @@ async fn ingest_start(
         "ingestion job created",
     );
 
-    run_and_finish(ctx, job, run).await
+    drive(ctx, job, run).await
 }
 
-/// Advances a job to its next step (atomically, behind a row lock) and runs it.
+/// Advances a job to its next step (atomically, behind a row lock) and drives it.
 async fn ingest_continue(ctx: &Ctx, job_id: Uuid) -> anyhow::Result<()> {
     match ctx.db.continue_job(job_id).await? {
         Advanced::Completed => {
@@ -203,18 +214,48 @@ async fn ingest_continue(ctx: &Ctx, job_id: Uuid) -> anyhow::Result<()> {
         Advanced::Running(run) => {
             tracing::info!(%job_id, step = run.step.as_str(), "continuing ingestion job");
             let job = load(ctx, job_id).await?;
-            run_and_finish(ctx, job, run).await
+            drive(ctx, job, run).await
         }
     }
 }
 
 /// Re-runs a job's current step as a fresh attempt (atomically, behind a row
-/// lock), to retry a failed step or redo a bad one.
+/// lock), to retry a failed step or redo a bad one, then drives it.
 async fn ingest_restart(ctx: &Ctx, job_id: Uuid) -> anyhow::Result<()> {
     let run = ctx.db.restart_job(job_id).await?;
     tracing::info!(%job_id, step = run.step.as_str(), "restarting ingestion job step");
     let job = load(ctx, job_id).await?;
-    run_and_finish(ctx, job, run).await
+    drive(ctx, job, run).await
+}
+
+/// Drives a job from an already-begun step run. Runs the step; then, for an
+/// [`IngestionMode::Auto`] job, keeps advancing to and running the next step
+/// until the job completes or a step fails. A [`IngestionMode::Manual`] job
+/// runs the single step and stops, leaving it paused for review.
+async fn drive(ctx: &Ctx, mut job: IngestionJob, mut run: IngestionStepRun) -> anyhow::Result<()> {
+    loop {
+        run_and_finish(ctx, &job, &run).await?;
+
+        if !job.mode.is_auto() {
+            return Ok(());
+        }
+
+        match ctx.db.continue_job(job.id).await? {
+            Advanced::Completed => {
+                tracing::info!(job_id = %job.id, "ingestion job completed");
+                return Ok(());
+            }
+            Advanced::Running(next) => {
+                tracing::info!(
+                    job_id = %job.id,
+                    step = next.step.as_str(),
+                    "auto-continuing ingestion job",
+                );
+                job = load(ctx, job.id).await?;
+                run = next;
+            }
+        }
+    }
 }
 
 /// Stops a job's running step by writing `aborted` to the database. Write-only:
@@ -248,7 +289,11 @@ async fn load(ctx: &Ctx, job_id: Uuid) -> anyhow::Result<IngestionJob> {
 /// failed — unless it is stopped meanwhile. While the body runs, the run's
 /// status is polled; if it becomes `aborted` (via `stop`), the body is cancelled
 /// and nothing is overwritten.
-async fn run_and_finish(ctx: &Ctx, job: IngestionJob, run: IngestionStepRun) -> anyhow::Result<()> {
+async fn run_and_finish(
+    ctx: &Ctx,
+    job: &IngestionJob,
+    run: &IngestionStepRun,
+) -> anyhow::Result<()> {
     tracing::info!(
         job_id = %run.job_id,
         run_id = %run.id,
@@ -258,7 +303,7 @@ async fn run_and_finish(ctx: &Ctx, job: IngestionJob, run: IngestionStepRun) -> 
     );
 
     let outcome = tokio::select! {
-        outcome = run_step(ctx, &job) => outcome,
+        outcome = run_step(ctx, job) => outcome,
         result = watch_for_abort(&ctx.db, run.id) => return result,
     };
 
@@ -415,6 +460,7 @@ mod tests {
                         game_id,
                         file,
                         language,
+                        mode,
                         created_by,
                     },
                 ..
@@ -422,6 +468,7 @@ mod tests {
                 assert_eq!(game_id, id.parse::<Uuid>().unwrap());
                 assert_eq!(file, std::path::Path::new("rules.txt"));
                 assert_eq!(language, LanguageCode::new("fr").unwrap());
+                assert_eq!(mode, IngestionMode::Auto);
                 assert_eq!(created_by, Some(user.parse::<Uuid>().unwrap()));
             }
             other => panic!("expected ingest start, got {other:?}"),
@@ -447,6 +494,90 @@ mod tests {
             } => assert_eq!(created_by, None),
             other => panic!("expected ingest start, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ingest_start_defaults_to_auto_mode() {
+        let cli = Cli::parse_from(argv(&[
+            "ingest",
+            "start",
+            "--game-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--file",
+            "rules.txt",
+            "--language",
+            "en",
+        ]));
+        match cli.command {
+            Command::Ingest {
+                action: IngestAction::Start { mode, .. },
+                ..
+            } => assert_eq!(mode, IngestionMode::Auto),
+            other => panic!("expected ingest start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ingest_start_parses_manual_mode() {
+        let cli = Cli::parse_from(argv(&[
+            "ingest",
+            "start",
+            "--game-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--file",
+            "rules.txt",
+            "--language",
+            "en",
+            "--mode",
+            "manual",
+        ]));
+        match cli.command {
+            Command::Ingest {
+                action: IngestAction::Start { mode, .. },
+                ..
+            } => assert_eq!(mode, IngestionMode::Manual),
+            other => panic!("expected ingest start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ingest_start_parses_auto_mode() {
+        let cli = Cli::parse_from(argv(&[
+            "ingest",
+            "start",
+            "--game-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--file",
+            "rules.txt",
+            "--language",
+            "en",
+            "--mode",
+            "auto",
+        ]));
+        match cli.command {
+            Command::Ingest {
+                action: IngestAction::Start { mode, .. },
+                ..
+            } => assert_eq!(mode, IngestionMode::Auto),
+            other => panic!("expected ingest start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ingest_start_rejects_invalid_mode() {
+        let args = argv(&[
+            "ingest",
+            "start",
+            "--game-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--file",
+            "rules.txt",
+            "--language",
+            "en",
+            "--mode",
+            "semi",
+        ]);
+        assert!(Cli::try_parse_from(args).is_err());
     }
 
     #[test]

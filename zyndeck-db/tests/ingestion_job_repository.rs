@@ -10,7 +10,7 @@
 
 use sqlx::PgPool;
 use uuid::Uuid;
-use zyndeck_core::{IngestionStep, LanguageCode, LocalizedString, Role};
+use zyndeck_core::{IngestionMode, IngestionStep, LanguageCode, LocalizedString, Role};
 use zyndeck_db::{
     Error, GameRepository, IngestionJobRepository, NewGame, NewIngestionJob, NewUser,
     PgGameRepository, PgIngestionJobRepository, PgUserRepository, UserRepository,
@@ -46,6 +46,7 @@ fn a_new_job(game_id: Uuid, created_by: Option<Uuid>) -> NewIngestionJob {
         game_id,
         source: "rules.pdf".into(),
         language: LanguageCode::ENGLISH,
+        mode: IngestionMode::Manual,
         created_by,
     }
 }
@@ -60,6 +61,7 @@ async fn create_starts_on_the_first_step_and_can_be_found(pool: PgPool) {
         .await
         .expect("create the job");
     assert_eq!(created.step, IngestionStep::FIRST);
+    assert_eq!(created.mode, IngestionMode::Manual);
     assert_eq!(created.created_by, Some(user));
     assert_eq!(created.game_id, game);
     assert_eq!(created.source, std::path::Path::new("rules.pdf"));
@@ -71,6 +73,29 @@ async fn create_starts_on_the_first_step_and_can_be_found(pool: PgPool) {
         .expect("look the job up")
         .expect("the job should exist");
     assert_eq!(found, created);
+}
+
+#[sqlx::test]
+async fn create_persists_the_auto_mode(pool: PgPool) {
+    let (_, game) = a_user_and_game(&pool).await;
+    let repo = PgIngestionJobRepository::new(pool);
+
+    let created = repo
+        .create(NewIngestionJob {
+            mode: IngestionMode::Auto,
+            ..a_new_job(game, None)
+        })
+        .await
+        .expect("create the job");
+    assert_eq!(created.mode, IngestionMode::Auto);
+
+    // The mode is stored, not just echoed back.
+    let found = repo
+        .find_by_id(created.id)
+        .await
+        .expect("look the job up")
+        .expect("the job should exist");
+    assert_eq!(found.mode, IngestionMode::Auto);
 }
 
 #[sqlx::test]

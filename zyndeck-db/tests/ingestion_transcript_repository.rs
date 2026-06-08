@@ -7,7 +7,7 @@
 
 use sqlx::PgPool;
 use uuid::Uuid;
-use zyndeck_core::{LanguageCode, LocalizedString, Role};
+use zyndeck_core::{IngestionMode, LanguageCode, LocalizedString, Role};
 use zyndeck_db::{
     GameRepository, IngestionJobRepository, IngestionTranscriptRepository, NewGame,
     NewIngestionJob, NewUser, PgGameRepository, PgIngestionJobRepository,
@@ -39,6 +39,7 @@ async fn a_job(pool: &PgPool) -> Uuid {
             game_id: game,
             source: "rules.pdf".into(),
             language: LanguageCode::ENGLISH,
+            mode: IngestionMode::Manual,
             created_by: None,
         })
         .await

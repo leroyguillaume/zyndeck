@@ -13,7 +13,8 @@ mod user;
 
 pub use game::Game;
 pub use ingestion_job::{
-    IngestionJob, IngestionStep, IngestionStepRun, ParseIngestionStepError, StepRunStatus,
+    IngestionJob, IngestionMode, IngestionStep, IngestionStepRun, ParseIngestionModeError,
+    ParseIngestionStepError, StepRunStatus,
 };
 pub use language_code::{InvalidLanguageCode, LanguageCode};
 pub use localized_string::LocalizedString;

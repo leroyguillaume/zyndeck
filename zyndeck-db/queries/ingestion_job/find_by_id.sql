@@ -4,6 +4,7 @@ SELECT
     source,
     language,
     step,
+    mode,
     created_at,
     created_by
 FROM ingestion_job

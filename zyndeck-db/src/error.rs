@@ -28,6 +28,10 @@ pub enum Error {
     #[error("invalid ingestion step {0:?} stored in the database")]
     InvalidIngestionStep(String),
 
+    /// An ingestion mode value stored in the database is not recognised.
+    #[error("invalid ingestion mode {0:?} stored in the database")]
+    InvalidIngestionMode(String),
+
     /// A language value stored in the database is not a valid ISO 639-1 code.
     #[error("invalid language {0:?} stored in the database")]
     InvalidLanguage(String),

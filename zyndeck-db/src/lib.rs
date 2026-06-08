@@ -137,6 +137,7 @@ impl Db {
         .bind(new.game_id)
         .bind(new.source.to_string_lossy().into_owned())
         .bind(new.language.as_str())
+        .bind(new.mode.as_str())
         .bind(new.created_by)
         .fetch_one(&mut *tx)
         .await

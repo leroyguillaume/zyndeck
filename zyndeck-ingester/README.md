@@ -69,6 +69,17 @@ reviewed, and corrected if needed, before the next step is run.
 - `restart` re-runs the current step as a fresh attempt, to retry a failed step
   or redo one whose output was unsatisfactory.
 
+A job has a **mode** that decides what happens once a step succeeds, chosen at
+`start` with `--mode` (default `auto`):
+
+- **`auto`** (default) — the job keeps advancing through the steps on its own,
+  running each in turn, and stops only when the pipeline **completes** or a step
+  **fails**. `restart`-ing a failed step on an `auto` job resumes the automatic
+  run from there once the retry succeeds.
+- **`manual`** — the job stops after each step and waits for an explicit
+  `continue`, so the step's output (notably the extracted transcript) can be
+  reviewed and corrected before the next step runs.
+
 Every execution is recorded in a **run history** (`ingestion_step_run` table):
 one row per attempt, with its status (`pending` / `running` / `succeeded` /
 `failed` / `aborted`), `started_at`, `completed_at`, `error` (on failure), and a
@@ -121,6 +132,7 @@ at startup**, for every subcommand (including `run`).
 | `--game-id` | `GAME_ID` | yes | Identifier (UUID) of the game the rules belong to. |
 | `--file` | `RULES_FILE` | yes | Path to the file holding the rules to ingest. |
 | `--language` | `RULES_LANGUAGE` | yes | ISO 639-1 language of the document (e.g. `fr`, `en`). |
+| `--mode` | `INGESTION_MODE` | no (`auto`) | How the job advances between steps: `auto` runs straight through until it completes or a step fails; `manual` stops after each step for review. |
 | `--created-by` | `CREATED_BY` | no | Identifier (UUID) of the user starting the job; omitted for anonymous CLI runs. |
 
 `ingest continue` / `ingest restart` / `ingest stop`:
@@ -146,13 +158,20 @@ export DATABASE_URL=postgresql://zyndeck:zyndeck@localhost:5432/zyndeck
 # Long-running service (applies migrations at startup, then idles)
 cargo run -p zyndeck-ingester -- run
 
-# Start a job and run its first step
+# Start a job (default auto mode: runs all steps until done or a failure)
 cargo run -p zyndeck-ingester -- ingest start \
   --game-id 00000000-0000-0000-0000-000000000001 \
   --file path/to/rules.pdf \
   --language en
 
-# Later, advance that job one step
+# Or start a job that stops after each step for review
+cargo run -p zyndeck-ingester -- ingest start \
+  --game-id 00000000-0000-0000-0000-000000000001 \
+  --file path/to/rules.pdf \
+  --language en \
+  --mode manual
+
+# Later, advance a manual job one step
 cargo run -p zyndeck-ingester -- ingest continue \
   --job-id <job-id-from-start>
 
