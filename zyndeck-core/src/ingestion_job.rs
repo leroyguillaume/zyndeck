@@ -11,9 +11,11 @@ use crate::LanguageCode;
 ///
 /// A pure domain entity (like [`crate::Game`], deliberately **not**
 /// `Serialize`/`Deserialize`): the wire and storage formats are the boundary
-/// layers' concern. The job advances one [`IngestionStep`] at a time so the
-/// pipeline can hand control back between steps — e.g. for a human to review and
-/// fix the extracted transcript before it is chunked and embedded.
+/// layers' concern. The job runs in two phases with a human gate between them:
+/// the [`Extract`](IngestionStep::Extract) step produces a transcript and the
+/// pipeline stops; only after the transcript is reviewed and explicitly
+/// validated do [`Chunk`](IngestionStep::Chunk) and [`Embed`](IngestionStep::Embed)
+/// run, straight through to completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngestionJob {
     /// Stable identifier, assigned by the database on creation.
@@ -29,10 +31,6 @@ pub struct IngestionJob {
     /// pipeline is done. The outcome of each attempt lives in the job's
     /// [`IngestionStepRun`] history, not here.
     pub step: IngestionStep,
-    /// How the job advances between steps: [`Manual`](IngestionMode::Manual)
-    /// pauses after each step for review, [`Auto`](IngestionMode::Auto) runs
-    /// straight through until it completes or a step fails.
-    pub mode: IngestionMode,
     /// Id of the user who started the job, if any — CLI runs may be anonymous.
     pub created_by: Option<Uuid>,
     /// When the job was created.
@@ -41,10 +39,10 @@ pub struct IngestionJob {
 
 /// A stage of the ingestion pipeline.
 ///
-/// A job works through these in order, one per invocation, pausing between them
-/// so the output of each can be reviewed (and, for
-/// [`Extract`](IngestionStep::Extract), corrected) before moving on. `step`
-/// records the step the job is currently on.
+/// A job works through these in order. The pipeline always stops after
+/// [`Extract`](IngestionStep::Extract) so the transcript can be reviewed and
+/// corrected; once it is validated, the remaining steps run straight through.
+/// `step` records the step the job is currently on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IngestionStep {
     /// Extract text from the source document into a reviewable transcript.
@@ -103,60 +101,6 @@ impl FromStr for IngestionStep {
             "embed" => Ok(IngestionStep::Embed),
             "completed" => Ok(IngestionStep::Completed),
             other => Err(ParseIngestionStepError(other.to_owned())),
-        }
-    }
-}
-
-/// How an [`IngestionJob`] advances from one [`IngestionStep`] to the next.
-///
-/// The pipeline runs a step at a time; this decides what happens once a step
-/// succeeds. [`Auto`](IngestionMode::Auto) is the default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum IngestionMode {
-    /// Stop after each step and wait for an explicit `continue` — so the step's
-    /// output (notably the extracted transcript) can be reviewed and corrected
-    /// before the next step runs.
-    Manual,
-    /// Keep advancing through the steps without intervention, stopping only when
-    /// the job completes or a step fails.
-    #[default]
-    Auto,
-}
-
-impl IngestionMode {
-    /// Whether the job should keep advancing on its own once a step succeeds.
-    pub fn is_auto(self) -> bool {
-        matches!(self, IngestionMode::Auto)
-    }
-
-    /// The storage/representation string.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            IngestionMode::Manual => "manual",
-            IngestionMode::Auto => "auto",
-        }
-    }
-}
-
-impl std::fmt::Display for IngestionMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Returned when a string is not a recognised [`IngestionMode`].
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("invalid ingestion mode {0:?}: expected one of manual, auto")]
-pub struct ParseIngestionModeError(pub String);
-
-impl FromStr for IngestionMode {
-    type Err = ParseIngestionModeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "manual" => Ok(IngestionMode::Manual),
-            "auto" => Ok(IngestionMode::Auto),
-            other => Err(ParseIngestionModeError(other.to_owned())),
         }
     }
 }
@@ -304,28 +248,6 @@ mod tests {
         assert!(!IngestionStep::Extract.is_completed());
         assert!(!IngestionStep::Chunk.is_completed());
         assert!(!IngestionStep::Embed.is_completed());
-    }
-
-    #[test]
-    fn mode_as_str_round_trips_through_from_str() {
-        for mode in [IngestionMode::Manual, IngestionMode::Auto] {
-            assert_eq!(IngestionMode::from_str(mode.as_str()), Ok(mode));
-        }
-    }
-
-    #[test]
-    fn from_str_rejects_unknown_modes() {
-        assert_eq!(
-            IngestionMode::from_str("semi"),
-            Err(ParseIngestionModeError("semi".to_owned()))
-        );
-    }
-
-    #[test]
-    fn only_auto_is_auto_and_it_is_the_default() {
-        assert!(IngestionMode::Auto.is_auto());
-        assert!(!IngestionMode::Manual.is_auto());
-        assert_eq!(IngestionMode::default(), IngestionMode::Auto);
     }
 
     fn at(secs: i64) -> DateTime<Utc> {

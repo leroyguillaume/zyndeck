@@ -56,28 +56,31 @@ Its role is to act on ingestion **jobs**, which are created out-of-band by the
 [`zyndeck` CLI](../zyndeck-cli) writing directly to the database — the ingester
 does not expose any job-management commands of its own. A job is modelled as an
 `IngestionJob` that works through one step at a time (`extract` → `chunk` →
-`embed`); see the [CLI README](../zyndeck-cli) for the job model (steps, modes,
-run history) and how to create one.
+`embed`), in two phases with a human validation gate after `extract`; see the
+[CLI README](../zyndeck-cli) for the job model (phases, validation, run history)
+and how to create one.
 
-### How it picks up jobs
+### How it picks up work
 
-The service reacts to jobs rather than polling for them:
+The service reacts to work rather than polling for it. The unit of work it
+executes is a **pending step run**: every action that needs the service —
+creating a job, validating a transcript, restarting a transcription — enqueues a
+`pending` run and fires one notification.
 
-- **`LISTEN`/`NOTIFY`.** A database trigger (migration `0009`) emits a
-  notification on the `ingestion_job_created` channel whenever a job row is
-  inserted, carrying the job's id. The service `LISTEN`s on that channel and
-  drives each job as it arrives. Because `NOTIFY` is transactional, a job is
-  announced exactly when it becomes visible — and never if the insert rolls
-  back.
+- **`LISTEN`/`NOTIFY`.** Both the job-creation trigger and the validate/restart
+  transitions emit a notification on the `ingestion_job_ready` channel, carrying
+  the job's id. The service `LISTEN`s on it and, for each id, **claims** the
+  job's pending run — an atomic `pending → running` update, so duplicate
+  notifications (or several service instances) cannot execute the same run twice.
+  Because `NOTIFY` is transactional, the run is announced exactly when it becomes
+  visible — and never if the enqueuing transaction rolls back.
 - **Startup sweep.** A notification fired while no service is listening is lost,
-  so on startup the service also processes any job that was created but never
-  run (it subscribes *before* sweeping, so nothing slips through the gap).
+  so on startup the service also processes any job left with a pending run (it
+  subscribes *before* sweeping, so nothing slips through the gap).
 
-Claiming a job is atomic: beginning its first run takes the same `FOR UPDATE`
-lock as the other transitions and relies on the one-active-run-per-job index, so
-two service instances reacting to the same notification can't both process it.
-An **auto** job is driven straight through to completion (or until a step fails);
-a **manual** job has its first step run, then stops for review.
+After running `extract`, the service **stops** and leaves the job awaiting human
+validation. Once validated, it claims the enqueued `chunk` run and chains
+straight through `chunk → embed` to completion (or until a step fails).
 
 > **Note:** only the `extract` step is implemented so far. A job left mid-flight
 > by a crash (its run stuck `running`) is **not** yet recovered — a reaper for

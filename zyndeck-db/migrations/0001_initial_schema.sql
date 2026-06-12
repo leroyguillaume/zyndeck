@@ -38,15 +38,13 @@ CREATE TABLE game (
 -- `game_id`, `source` and `language` are the inputs the job needs across its
 -- steps and retries (which game the rules belong to, the source document path,
 -- and its language), so the extract step and its re-runs never need them
--- re-supplied. `mode` records how a job advances between steps (mirrors
--- zyndeck-core's `IngestionMode`): `auto` (the default) runs straight through
--- until the job completes or a step fails; `manual` pauses after each step so its
--- output can be reviewed and corrected.
+-- re-supplied. The pipeline always pauses after `extract` for human validation
+-- of the transcript; once validated it runs `chunk` then `embed` straight
+-- through, so no per-job advancement mode is stored.
 CREATE TABLE ingestion_job (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     step text NOT NULL DEFAULT 'extract'
     CHECK (step IN ('extract', 'chunk', 'embed', 'completed')),
-    mode text NOT NULL DEFAULT 'auto' CHECK (mode IN ('manual', 'auto')),
     game_id uuid NOT NULL REFERENCES game (id) ON DELETE CASCADE,
     source text NOT NULL,
     language text NOT NULL,
@@ -88,25 +86,27 @@ CREATE TABLE ingestion_transcript (
     content text NOT NULL
 );
 
--- Notify listeners when an ingestion job is created, so the ingestion service
--- can pick it up without polling. The CLI (and any other writer) just inserts a
--- row; this trigger turns that insert into a `NOTIFY` on the
--- `ingestion_job_created` channel, carrying the new job's id as the payload.
+-- Notify the ingestion service that a job has work waiting, so it can pick it up
+-- without polling. The single `ingestion_job_ready` channel carries the job's id
+-- as the payload and is fired both by this trigger (on job creation) and by the
+-- application's validate/restart transitions (which enqueue a pending step run
+-- then `pg_notify` the same channel). The service reacts identically: claim the
+-- job's pending run and execute it.
 --
--- NOTIFY is transactional: the notification is delivered only when the inserting
--- transaction commits, and never if it rolls back — so a listener is told about
--- a job exactly when the job becomes visible.
-CREATE FUNCTION notify_ingestion_job_created()
+-- NOTIFY is transactional: the notification is delivered only when the enqueuing
+-- transaction commits, and never if it rolls back — so the service is told about
+-- the pending run exactly when it becomes visible.
+CREATE FUNCTION notify_ingestion_job_ready()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    PERFORM pg_notify('ingestion_job_created', new.id::text);
+    PERFORM pg_notify('ingestion_job_ready', new.id::text);
     RETURN new;
 END;
 $$;
 
-CREATE TRIGGER ingestion_job_created_notify
+CREATE TRIGGER ingestion_job_ready_notify
 AFTER INSERT ON ingestion_job
 FOR EACH ROW
-EXECUTE FUNCTION notify_ingestion_job_created();
+EXECUTE FUNCTION notify_ingestion_job_ready();

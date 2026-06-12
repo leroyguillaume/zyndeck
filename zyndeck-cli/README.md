@@ -12,26 +12,32 @@ the database (the [`zyndeck-db`](../zyndeck-db) layer), and the services — lik
 | Command | Description |
 | --- | --- |
 | `ingestion start` | Start a new rule-ingestion job for a document. Prints the new job's id to stdout. |
+| `ingestion edit` | Open a job's transcript in `$EDITOR` and save any edits. |
+| `ingestion validate` | Validate a job's transcript to continue the pipeline (chunk + embed). |
+| `ingestion restart` | Re-run a job's transcription (before it has been validated). |
 
 ### The ingestion job model
 
 Ingestion is modelled as a **job** (`IngestionJob`) that works through one step
-at a time — `extract` → `chunk` → `embed`. A freshly created job starts on
-`extract`; the ingestion service then runs the steps and records the outcome of
-each attempt in a **run history** (`ingestion_step_run`).
+at a time — `extract` → `chunk` → `embed` — recording the outcome of each
+attempt in a **run history** (`ingestion_step_run`). It runs in **two phases
+with a human gate** between them:
 
-A job has a **mode** that decides what happens once a step succeeds, chosen at
-creation with `--mode` (default `auto`):
+1. **Transcription** — the `extract` step reads the document into a reviewable
+   transcript, and the job then **stops** and waits.
+2. **Validation** — a human reviews (and optionally edits) the transcript and
+   **validates** it. Only then do `chunk` and `embed` run, straight through to
+   completion.
 
-- **`auto`** (default) — the job advances through the steps on its own, running
-  each in turn, and stops only when the pipeline **completes** or a step
-  **fails**.
-- **`manual`** — the job stops after each step so its output (notably the
-  extracted transcript) can be reviewed and corrected before the next step runs.
+Review is two steps: `ingestion edit` opens the transcript in your editor as
+many times as you like, and `ingestion validate` opens the gate once you're
+happy. Before validation the transcription can also be **restarted**
+(`ingestion restart`) to re-extract from scratch. Once validated, the job is
+locked into phase 2 and cannot be edited or restarted.
 
-A job stores its inputs (game, source document, language) so a step can be
-re-run without re-supplying them. `ingestion start` only **creates** the job
-row; running its steps is the ingestion service's job.
+A job stores its inputs (game, source document, language) so the extract step
+can be re-run without re-supplying them. The CLI only **writes** to the database;
+running the steps is the [`zyndeck-ingester`](../zyndeck-ingester) service's job.
 
 ## Configure
 
@@ -57,8 +63,38 @@ first.
 | `--game-id` | `GAME_ID` | yes | Identifier (UUID) of the game the rules belong to. |
 | `--file` | `RULES_FILE` | yes | Path to the file holding the rules to ingest. |
 | `--language` | `RULES_LANGUAGE` | yes | ISO 639-1 language of the document (e.g. `fr`, `en`). |
-| `--mode` | `INGESTION_MODE` | no (`auto`) | How the job advances between steps: `auto` runs straight through until it completes or a step fails; `manual` stops after each step for review. |
 | `--created-by` | `CREATED_BY` | no | Identifier (UUID) of the user starting the job; omitted for anonymous CLI runs. |
+
+`ingestion edit`:
+
+| Flag | Environment variable | Required | Description |
+| --- | --- | --- | --- |
+| `--job-id` | `JOB_ID` | yes | Identifier (UUID) of the job whose transcript to edit. |
+
+`edit` writes the transcript to a temporary `.md` file and opens it in your
+editor — `$VISUAL`, then `$EDITOR`, falling back to `vi` — saving any edits back.
+It does **not** wait: if transcription has not finished yet (no transcript), it
+errors out — try again once the service has produced one, or `ingestion restart`
+if it failed.
+
+`ingestion validate`:
+
+| Flag | Environment variable | Required | Description |
+| --- | --- | --- | --- |
+| `--job-id` | `JOB_ID` | yes | Identifier (UUID) of the job whose transcript to validate. |
+
+`validate` opens the human gate: the service continues through `chunk` and
+`embed`. There is no undo after validation; use `ingestion restart` to redo the
+transcription instead.
+
+`ingestion restart`:
+
+| Flag | Environment variable | Required | Description |
+| --- | --- | --- | --- |
+| `--job-id` | `JOB_ID` | yes | Identifier (UUID) of the job whose transcription to restart. |
+
+Re-runs the `extract` step. Only allowed while the job is still in the
+transcription phase — once validated, the job is locked into `chunk` + `embed`.
 
 ## Run
 
@@ -68,18 +104,24 @@ Postgres first: `docker compose up -d postgres`):
 ```bash
 export DATABASE_URL=postgresql://zyndeck:zyndeck@localhost:5432/zyndeck
 
-# Start an ingestion job (default auto mode); prints the new job id
+# Start an ingestion job; prints the new job id. The service transcribes it,
+# then stops to await validation.
 cargo run -p zyndeck-cli -- ingestion start \
   --game-id 00000000-0000-0000-0000-000000000001 \
   --file path/to/rules.pdf \
   --language en
 
-# Or start a job that stops after each step for review
-cargo run -p zyndeck-cli -- ingestion start \
-  --game-id 00000000-0000-0000-0000-000000000001 \
-  --file path/to/rules.pdf \
-  --language en \
-  --mode manual
+# Once transcription is done: edit the transcript in $EDITOR
+cargo run -p zyndeck-cli -- ingestion edit \
+  --job-id 00000000-0000-0000-0000-000000000001
+
+# Happy with it? Validate to run chunk + embed
+cargo run -p zyndeck-cli -- ingestion validate \
+  --job-id 00000000-0000-0000-0000-000000000001
+
+# Or re-run the transcription instead (before validating it)
+cargo run -p zyndeck-cli -- ingestion restart \
+  --job-id 00000000-0000-0000-0000-000000000001
 ```
 
 ## Test

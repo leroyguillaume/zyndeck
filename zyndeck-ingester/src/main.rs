@@ -99,12 +99,15 @@ async fn run(ctx: Ctx) -> anyhow::Result<()> {
     }
 }
 
-/// Processes any jobs created while the service was down (their `NOTIFY` was
-/// dropped, since no one was listening).
+/// Processes any jobs with work enqueued while the service was down (their
+/// `NOTIFY` was dropped, since no one was listening).
 async fn sweep(ctx: &Ctx) -> anyhow::Result<()> {
-    let job_ids = ctx.db.unprocessed_job_ids().await?;
+    let job_ids = ctx.db.pending_run_job_ids().await?;
     if !job_ids.is_empty() {
-        tracing::info!(count = job_ids.len(), "sweeping jobs created while offline");
+        tracing::info!(
+            count = job_ids.len(),
+            "sweeping jobs enqueued while offline"
+        );
     }
     for job_id in job_ids {
         if let Err(e) = process(ctx, job_id).await {
@@ -114,34 +117,34 @@ async fn sweep(ctx: &Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Claims a job and, if there is anything to do, drives it through the pipeline.
+/// Claims a job's pending run and, if there was one, drives it through the
+/// pipeline.
 async fn process(ctx: &Ctx, job_id: Uuid) -> anyhow::Result<()> {
-    match ctx.db.begin_initial_run(job_id).await? {
+    match ctx.db.claim_pending_run(job_id).await? {
         None => {
-            tracing::debug!(%job_id, "ingestion job needs no processing");
+            tracing::debug!(%job_id, "ingestion job has no pending run to claim");
             Ok(())
         }
         Some(run) => {
             let job = load(ctx, job_id).await?;
-            tracing::info!(
-                %job_id,
-                step = run.step.as_str(),
-                mode = job.mode.as_str(),
-                "processing ingestion job",
-            );
+            tracing::info!(%job_id, step = run.step.as_str(), "processing ingestion job");
             drive(ctx, job, run).await
         }
     }
 }
 
-/// Runs the job's claimed step; then, for an auto job, keeps advancing to and
-/// running the next step until the job completes or a step fails. A manual job
-/// runs the single step and stops, leaving it paused for review.
+/// Runs the claimed step. After `extract`, stops and leaves the job awaiting
+/// human validation of the transcript; for the phase-2 steps it keeps advancing
+/// (`chunk → embed`) until the job completes or a step fails.
 async fn drive(ctx: &Ctx, mut job: IngestionJob, mut run: IngestionStepRun) -> anyhow::Result<()> {
     loop {
         run_and_finish(ctx, &job, &run).await?;
 
-        if !job.mode.is_auto() {
+        if run.step == IngestionStep::Extract {
+            tracing::info!(
+                job_id = %job.id,
+                "transcription complete, awaiting human validation",
+            );
             return Ok(());
         }
 
@@ -154,7 +157,7 @@ async fn drive(ctx: &Ctx, mut job: IngestionJob, mut run: IngestionStepRun) -> a
                 tracing::info!(
                     job_id = %job.id,
                     step = next.step.as_str(),
-                    "auto-continuing ingestion job",
+                    "continuing ingestion job",
                 );
                 job = load(ctx, job.id).await?;
                 run = next;

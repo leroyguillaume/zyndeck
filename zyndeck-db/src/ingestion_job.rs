@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
-use zyndeck_core::{IngestionJob, IngestionMode, IngestionStep, LanguageCode};
+use zyndeck_core::{IngestionJob, IngestionStep, LanguageCode};
 
 use crate::{Error, Result};
 
@@ -15,7 +15,6 @@ pub struct NewIngestionJob {
     pub game_id: Uuid,
     pub source: PathBuf,
     pub language: LanguageCode,
-    pub mode: IngestionMode,
     pub created_by: Option<Uuid>,
 }
 
@@ -66,7 +65,6 @@ pub(crate) struct IngestionJobRow {
     source: String,
     language: String,
     step: String,
-    mode: String,
     created_at: DateTime<Utc>,
     created_by: Option<Uuid>,
 }
@@ -83,17 +81,12 @@ impl TryFrom<IngestionJobRow> for IngestionJob {
             .language
             .parse()
             .map_err(|_| Error::InvalidLanguage(row.language.clone()))?;
-        let mode: IngestionMode = row
-            .mode
-            .parse()
-            .map_err(|_| Error::InvalidIngestionMode(row.mode.clone()))?;
         Ok(IngestionJob {
             id: row.id,
             game_id: row.game_id,
             source: PathBuf::from(row.source),
             language,
             step,
-            mode,
             created_by: row.created_by,
             created_at: row.created_at,
         })
@@ -122,7 +115,6 @@ impl IngestionJobRepository for PgIngestionJobRepository {
         .bind(job.game_id)
         .bind(job.source.to_string_lossy().into_owned())
         .bind(job.language.as_str())
-        .bind(job.mode.as_str())
         .bind(job.created_by)
         .fetch_one(&self.pool)
         .await

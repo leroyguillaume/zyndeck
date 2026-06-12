@@ -28,10 +28,6 @@ pub enum Error {
     #[error("invalid ingestion step {0:?} stored in the database")]
     InvalidIngestionStep(String),
 
-    /// An ingestion mode value stored in the database is not recognised.
-    #[error("invalid ingestion mode {0:?} stored in the database")]
-    InvalidIngestionMode(String),
-
     /// A language value stored in the database is not a valid ISO 639-1 code.
     #[error("invalid language {0:?} stored in the database")]
     InvalidLanguage(String),
@@ -62,6 +58,15 @@ pub enum Error {
         job: uuid::Uuid,
         step: IngestionStep,
     },
+
+    /// Tried to validate or restart a job that is no longer in the transcription
+    /// phase (its transcript has already been validated, or the job is done).
+    #[error("ingestion job {0} is no longer in the transcription phase")]
+    NotInTranscriptionPhase(uuid::Uuid),
+
+    /// Tried to continue a job still awaiting human validation of its transcript.
+    #[error("ingestion job {0} must have its transcript validated before it can continue")]
+    ValidationRequired(uuid::Uuid),
 }
 
 /// Convenience alias for fallible operations in this crate.
