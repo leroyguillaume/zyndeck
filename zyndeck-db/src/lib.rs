@@ -45,7 +45,8 @@ use zyndeck_core::{IngestionJob, IngestionStep, IngestionStepRun};
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// Postgres `NOTIFY` channel on which a row is announced as soon as an ingestion
-/// job is created (see migration `0009`). The payload is the new job's id.
+/// job is created (see the `0001_initial_schema` migration). The payload is the
+/// new job's id.
 const JOB_CREATED_CHANNEL: &str = "ingestion_job_created";
 
 /// Outcome of advancing a job past its current (succeeded) step.
