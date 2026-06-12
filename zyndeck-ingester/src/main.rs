@@ -15,11 +15,24 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use zyndeck_core::{IngestionJob, IngestionStep, IngestionStepRun};
 use zyndeck_db::{
-    Advanced, Db, DbConfig, IngestionJobRepository, IngestionStepRunRepository,
-    IngestionTranscriptRepository, StepOutcome,
+    Advanced, Chunk, Db, DbConfig, IngestionChunkRepository, IngestionJobRepository,
+    IngestionStepRunRepository, IngestionTranscriptRepository, NewChunk, StepOutcome,
 };
 use zyndeck_ingester::document::{self, ExtractedDocument};
-use zyndeck_ingester::pdf;
+use zyndeck_ingester::embed::{Embedder, OllamaEmbedder};
+use zyndeck_ingester::{chunk, pdf};
+
+/// Default Ollama server URL; overridable via `--ollama-url` / `OLLAMA_URL`.
+const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+/// Default embedding model tag (see the root README's models table);
+/// overridable via `--embedding-model` / `EMBEDDING_MODEL`.
+const DEFAULT_EMBEDDING_MODEL: &str = "bge-m3:567m";
+
+/// How many chunks are embedded per request to Ollama. Batching keeps each
+/// request (and its memory) bounded and gives incremental progress, rather than
+/// embedding a whole document in one shot on a CPU-only host.
+const EMBED_BATCH: usize = 16;
 
 /// Command-line configuration. Resolution order is CLI flags → environment
 /// variables → defaults; every option carries an `env` so nothing is
@@ -42,13 +55,26 @@ struct Cli {
         default_value_t = pdf::DEFAULT_LIB_DIR.to_owned(),
     )]
     pdfium_lib_dir: String,
+
+    /// Base URL of the Ollama server the embed step calls.
+    #[arg(long = "ollama-url", env = "OLLAMA_URL", default_value = DEFAULT_OLLAMA_URL)]
+    ollama_url: String,
+
+    /// Ollama model tag used to embed chunks.
+    #[arg(
+        long = "embedding-model",
+        env = "EMBEDDING_MODEL",
+        default_value = DEFAULT_EMBEDDING_MODEL
+    )]
+    embedding_model: String,
 }
 
-/// Shared dependencies for processing jobs: the database and where to find the
-/// pdfium library.
+/// Shared dependencies for processing jobs: the database, where to find the
+/// pdfium library, and the embedder the embed step uses.
 struct Ctx {
     db: Db,
     pdfium_lib_dir: String,
+    embedder: OllamaEmbedder,
 }
 
 #[tokio::main]
@@ -65,9 +91,12 @@ async fn main() -> anyhow::Result<()> {
     let db = Db::connect(&cli.db).await?;
     db.migrate().await?;
 
+    let embedder = OllamaEmbedder::new(cli.ollama_url, cli.embedding_model);
+
     run(Ctx {
         db,
         pdfium_lib_dir: cli.pdfium_lib_dir,
+        embedder,
     })
     .await
 }
@@ -219,9 +248,8 @@ async fn run_and_finish(
 async fn run_step(ctx: &Ctx, job: &IngestionJob) -> anyhow::Result<()> {
     match job.step {
         IngestionStep::Extract => extract(ctx, job).await,
-        // TODO: chunk the reviewed transcript, then embed the chunks.
-        IngestionStep::Chunk => anyhow::bail!("chunking step is not implemented yet"),
-        IngestionStep::Embed => anyhow::bail!("embedding step is not implemented yet"),
+        IngestionStep::Chunk => chunk_step(ctx, job).await,
+        IngestionStep::Embed => embed_step(ctx, job).await,
         IngestionStep::Completed => anyhow::bail!("job is already completed"),
     }
 }
@@ -252,6 +280,76 @@ async fn extract(ctx: &Ctx, job: &IngestionJob) -> anyhow::Result<()> {
         .upsert(job.id, document.to_markdown())
         .await?;
     Ok(())
+}
+
+/// The chunk step: split the (reviewed) transcript into retrieval chunks and
+/// store them, replacing any from a previous run.
+async fn chunk_step(ctx: &Ctx, job: &IngestionJob) -> anyhow::Result<()> {
+    let transcript = ctx
+        .db
+        .transcripts()
+        .find(job.id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("job {} has no transcript to chunk", job.id))?;
+
+    let chunks = chunk::split(&transcript);
+    if chunks.is_empty() {
+        anyhow::bail!("chunking produced no chunks (is the transcript empty?)");
+    }
+
+    // Positions and pages are small in practice, but convert fallibly rather
+    // than truncating silently into the `integer` columns.
+    let new_chunks = chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, c)| {
+            Ok(NewChunk {
+                position: i32::try_from(index)?,
+                heading: c.heading,
+                page: i32::try_from(c.page)?,
+                content: c.content,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let count = new_chunks.len();
+    ctx.db.chunks().replace(job.id, new_chunks).await?;
+    tracing::info!(job_id = %job.id, count, "chunked transcript");
+    Ok(())
+}
+
+/// The embed step: embed each stored chunk and persist its vector. Idempotent —
+/// embeddings are upserted, so a re-run overwrites rather than duplicates.
+async fn embed_step(ctx: &Ctx, job: &IngestionJob) -> anyhow::Result<()> {
+    let chunks = ctx.db.chunks().find_by_job(job.id).await?;
+    if chunks.is_empty() {
+        anyhow::bail!("job {} has no chunks to embed", job.id);
+    }
+    let total = chunks.len();
+
+    let mut embedded = 0;
+    for batch in chunks.chunks(EMBED_BATCH) {
+        let inputs = batch.iter().map(embedding_input).collect();
+        let vectors = ctx.embedder.embed(inputs).await?;
+        for (chunk, vector) in batch.iter().zip(vectors) {
+            ctx.db.chunks().store_embedding(chunk.id, vector).await?;
+        }
+        embedded += batch.len();
+        tracing::debug!(job_id = %job.id, embedded, total, "embedding progress");
+    }
+
+    tracing::info!(job_id = %job.id, count = total, "embedded chunks");
+    Ok(())
+}
+
+/// The text embedded for a chunk: the section heading (for retrieval context)
+/// followed by the body, or just the body when the chunk has no heading.
+fn embedding_input(chunk: &Chunk) -> String {
+    if chunk.heading.is_empty() {
+        chunk.content.clone()
+    } else {
+        format!("{}\n\n{}", chunk.heading, chunk.content)
+    }
 }
 
 /// Completes on `SIGTERM` or `SIGINT`, so the service drains cleanly whether an

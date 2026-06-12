@@ -7,6 +7,7 @@
 mod config;
 mod error;
 mod game;
+mod ingestion_chunk;
 mod ingestion_job;
 mod ingestion_step_run;
 mod ingestion_transcript;
@@ -15,6 +16,7 @@ mod user;
 pub use config::DbConfig;
 pub use error::{Error, Result};
 pub use game::{GameRepository, GameUpdate, NewGame, PgGameRepository};
+pub use ingestion_chunk::{Chunk, IngestionChunkRepository, NewChunk, PgIngestionChunkRepository};
 pub use ingestion_job::{IngestionJobRepository, NewIngestionJob, PgIngestionJobRepository};
 pub use ingestion_step_run::{
     IngestionStepRunRepository, PgIngestionStepRunRepository, StepOutcome,
@@ -24,6 +26,8 @@ pub use user::{Credentials, NewUser, PgUserRepository, UserRepository, UserUpdat
 
 #[cfg(feature = "mock")]
 pub use game::MockGameRepository;
+#[cfg(feature = "mock")]
+pub use ingestion_chunk::MockIngestionChunkRepository;
 #[cfg(feature = "mock")]
 pub use ingestion_job::MockIngestionJobRepository;
 #[cfg(feature = "mock")]
@@ -126,6 +130,11 @@ impl Db {
     /// Returns an [`IngestionTranscriptRepository`] backed by this database's pool.
     pub fn transcripts(&self) -> PgIngestionTranscriptRepository {
         PgIngestionTranscriptRepository::new(self.pool.clone())
+    }
+
+    /// Returns an [`IngestionChunkRepository`] backed by this database's pool.
+    pub fn chunks(&self) -> PgIngestionChunkRepository {
+        PgIngestionChunkRepository::new(self.pool.clone())
     }
 
     /// Creates an ingestion job and atomically enqueues its first step's run,

@@ -46,6 +46,25 @@ prints the structured lines (`##` heading, `<>` icons) and the quality report:
 cargo run -p zyndeck-ingester --example explore -- path/to/rules.pdf [first-page] [last-page]
 ```
 
+## Chunking and embedding
+
+Once a transcript is validated, the remaining two steps turn it into searchable
+vectors:
+
+- [`chunk`](src/chunk.rs) — pure splitting of the (reviewed) Markdown transcript
+  into retrieval chunks. It is heading-aware (a chunk never crosses a `##`
+  section boundary) and caps a chunk at ~1200 characters, splitting a long
+  section at line boundaries. Each chunk keeps its section heading and the source
+  page it starts on, so retrieval can cite where a rule came from. Chunks are
+  stored in the `ingestion_chunk` table, replaced wholesale on a re-run.
+- [`embed`](src/embed.rs) — turns each chunk into a vector via a local
+  [Ollama](https://ollama.com/) server (`BGE-M3` by default, see the
+  [root README](../README.md#models)), reached over plain HTTP. The chunk's
+  heading is prepended to its body so the vector captures the section context.
+  Vectors are upserted into the `ingestion_chunk_embedding` pgvector column
+  (dimension 1024, cosine HNSW index), keyed by chunk, ready for the API's
+  nearest-neighbour retrieval.
+
 ## The service
 
 The binary is a **long-running service**. It applies any outstanding database
@@ -82,9 +101,10 @@ After running `extract`, the service **stops** and leaves the job awaiting human
 validation. Once validated, it claims the enqueued `chunk` run and chains
 straight through `chunk → embed` to completion (or until a step fails).
 
-> **Note:** only the `extract` step is implemented so far. A job left mid-flight
-> by a crash (its run stuck `running`) is **not** yet recovered — a reaper for
-> stale runs is still to come.
+> **Note:** a job left mid-flight by a crash (its run stuck `running`) is **not**
+> yet recovered — a reaper for stale runs is still to come. A `chunk` or `embed`
+> run that *fails* likewise has no retry path yet (`restart` only re-runs the
+> transcription phase), so a failed phase-2 run currently needs a fresh job.
 
 ## Configure
 
@@ -96,11 +116,15 @@ defaults**. Every option is settable both ways.
 | `--log-filter` | `RUST_LOG` | `info` | `tracing` filter directive (e.g. `info`, `zyndeck_ingester=debug`). |
 | `--database-url` | `DATABASE_URL` | _(required)_ | PostgreSQL connection URL. |
 | `--db-max-connections` | `DB_MAX_CONNECTIONS` | `10` | Connection pool size. |
+| `--pdfium-lib-dir` | `PDFIUM_LIB_PATH` | `/usr/local/lib/pdfium` | Directory holding the pdfium native library (extract step). |
+| `--ollama-url` | `OLLAMA_URL` | `http://localhost:11434` | Base URL of the Ollama server (embed step). |
+| `--embedding-model` | `EMBEDDING_MODEL` | `bge-m3:567m` | Ollama model tag used to embed chunks. |
 
 ## Run
 
-From the workspace root, with `-p`. The service needs a database (start the
-compose Postgres first: `docker compose up -d postgres`):
+From the workspace root, with `-p`. The service needs Postgres (always) and, for
+the embed step, the Ollama server with the embedding model pulled — `docker
+compose up -d` starts both and pulls the models:
 
 ```bash
 export DATABASE_URL=postgresql://zyndeck:zyndeck@localhost:5432/zyndeck

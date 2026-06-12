@@ -64,6 +64,12 @@ validator = { version = "0.20", features = ["derive"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 pdfium-render = "0.9"
+# pgvector's sqlx integration registers the `Vector` type with sqlx so rule
+# embeddings round-trip through the `vector` columns; no other backend pulled in.
+pgvector = { version = "0.4", default-features = false, features = ["sqlx"] }
+# HTTP client for the local Ollama embeddings API. No TLS backend: Ollama is
+# reached over plain HTTP on localhost, so we avoid pulling in OpenSSL/rustls.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
 # Internal crates, depended on across the workspace via `foo.workspace = true`.
 zyndeck-core = { path = "zyndeck-core" }

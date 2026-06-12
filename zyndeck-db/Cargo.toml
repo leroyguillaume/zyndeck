@@ -20,6 +20,7 @@ chrono.workspace = true
 clap.workspace = true
 futures.workspace = true
 mockall = { workspace = true, optional = true }
+pgvector.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
