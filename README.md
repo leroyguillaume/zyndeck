@@ -15,6 +15,7 @@ each component lives in its own crate directory at the repository root.
 | [`zyndeck-core`](zyndeck-core) | Domain model: entities and value types (e.g. `Game`, `User`, `LocalizedString`), no I/O. |
 | [`zyndeck-db`](zyndeck-db) | Database access layer: PostgreSQL connection pool, migrations (pgvector for rule embeddings), and repositories. |
 | [`zyndeck-api`](zyndeck-api) | HTTP API: CRUD for games and users, with JWT auth and role-based access control. |
+| [`zyndeck-cli`](zyndeck-cli) | Command-line control surface (binary `zyndeck`): drives Zyndeck by writing directly to the database. |
 | [`zyndeck-ingester`](zyndeck-ingester) | Service that ingests game rules so they can be validated against and queried by the LLM. |
 
 ## Requirements
@@ -95,10 +96,12 @@ database-backed and applies migrations at startup, so it needs `DATABASE_URL`:
 ```bash
 docker compose up -d postgres
 DATABASE_URL=postgresql://zyndeck:zyndeck@localhost:5432/zyndeck \
-  cargo run -p zyndeck-ingester -- run
+  cargo run -p zyndeck-ingester
 ```
 
-See the [`zyndeck-ingester` README](zyndeck-ingester) for its subcommands.
+Ingestion jobs are created with the `zyndeck` CLI — see the
+[`zyndeck-cli` README](zyndeck-cli) — which the ingester service then acts on.
+See the [`zyndeck-ingester` README](zyndeck-ingester) for the service itself.
 
 The HTTP API needs a database and a JWT secret:
 

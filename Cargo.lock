@@ -3438,6 +3438,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zyndeck-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zyndeck-core",
+ "zyndeck-db",
+]
+
+[[package]]
 name = "zyndeck-core"
 version = "0.1.0"
 dependencies = [
@@ -3460,6 +3474,7 @@ dependencies = [
  "mockall",
  "sqlx",
  "thiserror",
+ "tokio",
  "tracing",
  "uuid",
  "zyndeck-core",

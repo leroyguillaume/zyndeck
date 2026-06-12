@@ -36,13 +36,17 @@ pub use user::MockUserRepository;
 use ingestion_job::{IngestionJobRow, map_create_error};
 use ingestion_step_run::{IngestionStepRunRow, map_begin_error};
 use sqlx::migrate::Migrator;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgListener, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 use zyndeck_core::{IngestionJob, IngestionStep, IngestionStepRun};
 
 /// Embedded SQL migrations, applied in order by [`Db::migrate`].
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// Postgres `NOTIFY` channel on which a row is announced as soon as an ingestion
+/// job is created (see migration `0009`). The payload is the new job's id.
+const JOB_CREATED_CHANNEL: &str = "ingestion_job_created";
 
 /// Outcome of advancing a job past its current (succeeded) step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +210,87 @@ impl Db {
 
         tx.commit().await.map_err(Error::Query)?;
         Ok(run)
+    }
+
+    /// Claims a freshly-created job for processing: if it has never been run and
+    /// is not completed, begins a run for its (first) step and returns it.
+    /// Returns `None` when there is nothing to claim — the job already has a run
+    /// (in progress, paused for review, failed, or done) or is completed.
+    ///
+    /// Like the other transitions it holds a `FOR UPDATE` lock on the job row,
+    /// so two services reacting to the same notification cannot both claim it:
+    /// the second waits for the first to commit, then sees the run and returns
+    /// `None`.
+    pub async fn begin_initial_run(&self, job_id: Uuid) -> Result<Option<IngestionStepRun>> {
+        let mut tx = self.pool.begin().await.map_err(Error::Query)?;
+
+        let job = lock_job(&mut tx, job_id).await?;
+        if job.step.is_completed() || latest_run(&mut tx, job_id).await?.is_some() {
+            return Ok(None);
+        }
+        let run = begin_run(&mut tx, job_id, job.step).await?;
+
+        tx.commit().await.map_err(Error::Query)?;
+        Ok(Some(run))
+    }
+
+    /// Ids of jobs that have never been run and are not yet completed — the
+    /// fresh jobs the service still has to pick up. Used for a startup
+    /// catch-up sweep, since a job created while no service was listening had
+    /// its `NOTIFY` dropped.
+    pub async fn unprocessed_job_ids(&self) -> Result<Vec<Uuid>> {
+        sqlx::query_scalar::<_, Uuid>(include_str!(
+            "../queries/ingestion_job/find_unprocessed_ids.sql"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::Query)
+    }
+
+    /// Subscribes to ingestion-job-created notifications, yielding each new
+    /// job's id via [`IngestionJobListener::recv`]. The subscription owns its
+    /// own connection (separate from the pool's), released when the listener is
+    /// dropped — e.g. on shutdown.
+    pub async fn listen_ingestion_jobs(&self) -> Result<IngestionJobListener> {
+        let mut listener = PgListener::connect_with(&self.pool)
+            .await
+            .map_err(Error::Connect)?;
+        listener
+            .listen(JOB_CREATED_CHANNEL)
+            .await
+            .map_err(Error::Query)?;
+        tracing::debug!(
+            channel = JOB_CREATED_CHANNEL,
+            "listening for ingestion jobs"
+        );
+        Ok(IngestionJobListener { inner: listener })
+    }
+}
+
+/// A subscription to ingestion-job-created notifications.
+///
+/// Wraps a Postgres `LISTEN` connection so callers depend on a job-id stream
+/// rather than on `sqlx` directly. Reconnects transparently if the connection
+/// drops; notifications missed during a reconnect are recovered by
+/// [`Db::unprocessed_job_ids`] on the next startup sweep.
+pub struct IngestionJobListener {
+    inner: PgListener,
+}
+
+impl IngestionJobListener {
+    /// Waits for the next created job and returns its id. Payloads that are not
+    /// a valid job id are skipped (logged), so this only ever yields ids.
+    pub async fn recv(&mut self) -> Result<Uuid> {
+        loop {
+            let notification = self.inner.recv().await.map_err(Error::Query)?;
+            match notification.payload().parse::<Uuid>() {
+                Ok(job_id) => return Ok(job_id),
+                Err(_) => tracing::warn!(
+                    payload = notification.payload(),
+                    "ignoring job notification with a non-uuid payload",
+                ),
+            }
+        }
     }
 }
 

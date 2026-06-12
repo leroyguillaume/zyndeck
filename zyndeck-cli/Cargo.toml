@@ -1,0 +1,26 @@
+[package]
+name = "zyndeck-cli"
+version = "0.1.0"
+description = "Zyndeck command-line interface: drives Zyndeck by writing directly to the database."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# The crate is `zyndeck-cli`, but the binary it produces is `zyndeck`.
+[[bin]]
+name = "zyndeck"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+uuid.workspace = true
+zyndeck-core.workspace = true
+zyndeck-db.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

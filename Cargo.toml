@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["zyndeck-api", "zyndeck-core", "zyndeck-db", "zyndeck-ingester"]
+members = [
+    "zyndeck-api",
+    "zyndeck-cli",
+    "zyndeck-core",
+    "zyndeck-db",
+    "zyndeck-ingester",
+]
 
 [workspace.package]
 edition = "2024"

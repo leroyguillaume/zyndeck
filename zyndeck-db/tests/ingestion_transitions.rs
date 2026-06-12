@@ -7,6 +7,8 @@
 //!   cargo test -p zyndeck-db
 //! ```
 
+use std::time::Duration;
+
 use sqlx::PgPool;
 use uuid::Uuid;
 use zyndeck_core::{
@@ -14,24 +16,25 @@ use zyndeck_core::{
     Role, StepRunStatus,
 };
 use zyndeck_db::{
-    Advanced, Db, Error, GameRepository, IngestionStepRunRepository, NewGame, NewIngestionJob,
-    NewUser, StepOutcome, UserRepository,
+    Advanced, Db, Error, GameRepository, IngestionJobRepository, IngestionStepRunRepository,
+    NewGame, NewIngestionJob, NewUser, StepOutcome, UserRepository,
 };
 
-/// Creates a user + game, then starts a job for it (with its first run begun).
-async fn start(db: &Db) -> (IngestionJob, IngestionStepRun) {
+/// Creates a user and a game (to satisfy a job's foreign keys), returning the
+/// game's id.
+async fn a_game(db: &Db) -> Uuid {
     let user = db
         .users()
         .create(NewUser {
-            username: "ingester".into(),
+            // Unique per call so a test can create more than one game/job.
+            username: format!("ingester-{}", Uuid::new_v4()),
             password_hash: "hash".into(),
             role: Role::User,
         })
         .await
         .expect("create the user")
         .id;
-    let game = db
-        .games()
+    db.games()
         .create(NewGame {
             name: LocalizedString::from_pairs([("en", "Marvel Champions")])
                 .expect("valid language code"),
@@ -39,16 +42,26 @@ async fn start(db: &Db) -> (IngestionJob, IngestionStepRun) {
         })
         .await
         .expect("create the game")
-        .id;
-    db.start_job(NewIngestionJob {
+        .id
+}
+
+/// Inputs for a job against `game`, in the given mode.
+fn a_new_job(game: Uuid, mode: IngestionMode) -> NewIngestionJob {
+    NewIngestionJob {
         game_id: game,
         source: "rules.pdf".into(),
         language: LanguageCode::ENGLISH,
-        mode: IngestionMode::Manual,
+        mode,
         created_by: None,
-    })
-    .await
-    .expect("start the job")
+    }
+}
+
+/// Creates a user + game, then starts a job for it (with its first run begun).
+async fn start(db: &Db) -> (IngestionJob, IngestionStepRun) {
+    let game = a_game(db).await;
+    db.start_job(a_new_job(game, IngestionMode::Manual))
+        .await
+        .expect("start the job")
 }
 
 /// Finishes a run with the given outcome, panicking on any error.
@@ -192,13 +205,7 @@ async fn start_for_an_unknown_game_reports_game_not_found(pool: PgPool) {
     let unknown = Uuid::new_v4();
 
     let result = db
-        .start_job(NewIngestionJob {
-            game_id: unknown,
-            source: "rules.pdf".into(),
-            language: LanguageCode::ENGLISH,
-            mode: IngestionMode::Manual,
-            created_by: None,
-        })
+        .start_job(a_new_job(unknown, IngestionMode::Manual))
         .await;
 
     assert!(
@@ -219,4 +226,93 @@ async fn transitions_on_a_missing_job_report_not_found(pool: PgPool) {
         db.restart_job(Uuid::new_v4()).await,
         Err(Error::JobNotFound(_))
     ));
+    assert!(matches!(
+        db.begin_initial_run(Uuid::new_v4()).await,
+        Err(Error::JobNotFound(_))
+    ));
+}
+
+#[sqlx::test]
+async fn begin_initial_run_claims_a_fresh_job_once(pool: PgPool) {
+    let db = Db::new(pool);
+    let game = a_game(&db).await;
+    let job = db
+        .ingestion_jobs()
+        .create(a_new_job(game, IngestionMode::Auto))
+        .await
+        .expect("create the job");
+
+    // First claim begins the first step's run.
+    let run = db
+        .begin_initial_run(job.id)
+        .await
+        .expect("claim the job")
+        .expect("a fresh job is claimable");
+    assert_eq!(run.job_id, job.id);
+    assert_eq!(run.step, IngestionStep::Extract);
+    assert_eq!(run.attempt, 1);
+    assert!(matches!(run.status, StepRunStatus::Running { .. }));
+
+    // It is now in flight, so a second claim finds nothing to do.
+    assert!(
+        db.begin_initial_run(job.id)
+            .await
+            .expect("second claim succeeds")
+            .is_none(),
+        "a job that already has a run must not be claimed again",
+    );
+}
+
+#[sqlx::test]
+async fn begin_initial_run_skips_a_job_that_has_already_run(pool: PgPool) {
+    let db = Db::new(pool);
+    // `start` begins a run, so the job is no longer fresh.
+    let (job, _run) = start(&db).await;
+
+    assert!(
+        db.begin_initial_run(job.id)
+            .await
+            .expect("claim succeeds")
+            .is_none(),
+    );
+}
+
+#[sqlx::test]
+async fn unprocessed_job_ids_lists_only_fresh_jobs(pool: PgPool) {
+    let db = Db::new(pool);
+    let game = a_game(&db).await;
+    let fresh = db
+        .ingestion_jobs()
+        .create(a_new_job(game, IngestionMode::Auto))
+        .await
+        .expect("create the fresh job")
+        .id;
+    // A second job that has already been started (it has a run).
+    let (started, _run) = start(&db).await;
+
+    let ids = db
+        .unprocessed_job_ids()
+        .await
+        .expect("list unprocessed jobs");
+
+    assert!(ids.contains(&fresh), "a fresh job must be listed");
+    assert!(
+        !ids.contains(&started.id),
+        "a job that already has a run must not be listed",
+    );
+}
+
+#[sqlx::test]
+async fn creating_a_job_notifies_the_listener(pool: PgPool) {
+    let db = Db::new(pool);
+    // Subscribe before the job is created, so the notification is delivered.
+    let mut listener = db.listen_ingestion_jobs().await.expect("subscribe");
+
+    let (job, _run) = start(&db).await;
+
+    let received = tokio::time::timeout(Duration::from_secs(5), listener.recv())
+        .await
+        .expect("a notification arrives within the timeout")
+        .expect("the notification is received");
+    assert_eq!(received, job.id);
 }

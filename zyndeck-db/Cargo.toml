@@ -25,3 +25,7 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 zyndeck-core.workspace = true
+
+[dev-dependencies]
+# For `tokio::time::timeout` in the notification integration test.
+tokio.workspace = true
