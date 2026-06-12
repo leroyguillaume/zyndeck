@@ -45,6 +45,26 @@ defaults**:
 | `--database-url` | `DATABASE_URL` | _(required)_ | PostgreSQL connection URL. |
 | `--db-max-connections` | `DB_MAX_CONNECTIONS` | `10` | Connection pool size. |
 
+## Recreate the database
+
+The crate ships a small operator binary, **`zyndeck-db-tool`**, whose `recreate`
+command drops the target database, creates it fresh, and applies every
+migration — handy for resetting a local or CI database to a clean,
+fully-migrated state. It needs a connection URL whose role may create databases,
+and it flattens the same `DbConfig` flags as everything else.
+
+It is destructive, so it asks for confirmation unless you pass `--yes`:
+
+```bash
+DATABASE_URL=postgresql://zyndeck:zyndeck@localhost:5432/zyndeck \
+  cargo run -p zyndeck-db --bin zyndeck-db-tool -- recreate --yes
+```
+
+| Flag | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `--yes` / `-y` | `ASSUME_YES` | `false` | Skip the confirmation prompt. |
+| `--log-filter` | `RUST_LOG` | `info` | `tracing` filter directive. |
+
 ## Test
 
 The integration tests run against a **real Postgres** (the

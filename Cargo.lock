@@ -3559,6 +3559,7 @@ dependencies = [
 name = "zyndeck-db"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "clap",
  "futures",
@@ -3568,6 +3569,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "zyndeck-core",
 ]
